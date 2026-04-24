@@ -1,13 +1,15 @@
 #pragma once
+#include <Arduino.h>
 
 // ====================================================================
 // KONFIGURACJA WIFI I CHMURY
 // ====================================================================
-const char* WIFI_SSID = "SmartHome";
-const char* WIFI_PASS = "123456789";
+#define WIFI_SSID "SmartHome"
+#define WIFI_PASS "123456789"
+#define HOSTNAME "msag"
+
 const String GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwhYfMLe6PS3PxiIYSjvXA-fwvaT6TM6Ta97vp9TzwSErPxCwhNvsFWI8d1dCimNf-w/exec";
 const String FW_VERSION = "v1.2 PRO-C6-HYBRID";
-const char* HOSTNAME = "msag";
 
 // ====================================================================
 // PINY
