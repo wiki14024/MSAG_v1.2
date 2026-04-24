@@ -1,3 +1,4 @@
+
 #pragma once
 #include <Arduino.h>
 #include <SPI.h>
@@ -6,8 +7,8 @@
 
 class EnergyMeter {
 public:
-    // Inicjalizacja magistrali i układu
-    void init(int csPin, SemaphoreHandle_t mutex);
+    // Zwraca TRUE jeśli SPI i układ odpowiedzą poprawnie, FALSE w przypadku awarii
+    bool init(int csPin, SemaphoreHandle_t mutex);
     
     // Funkcje odczytu (0 = L1, 1 = L2, 2 = L3)
     float getTotalActivePower();
@@ -20,13 +21,12 @@ public:
     double getImportEnergy();
     
     uint16_t getSysStatus0();
-    uint16_t getRawCurrent(uint8_t phase); // Dla Twojej diagnostyki
+    uint16_t getRawCurrent(uint8_t phase); 
     
 private:
     int _cs;
     SemaphoreHandle_t _spiMutex;
     
-    // Niskopoziomowe, bezpieczne funkcje SPI
     uint16_t read16(uint16_t addr);
     int32_t read32(uint16_t addrHigh, uint16_t addrLow);
     void write16(uint16_t addr, uint16_t val);

@@ -255,9 +255,13 @@ void setup() {
   if (queue_size > 0 && queue_size <= 24) nvm.getBytes("queue", syncQueue, sizeof(PendingRecord) * queue_size);
   
   // URUCHOMIENIE NOWEJ BIBLIOTEKI
-  SPI.begin(PIN_SPI_SCK, PIN_SPI_MISO, PIN_SPI_MOSI, PIN_SPI_CS);
-  licznik_atm.init(PIN_SPI_CS, spiMutex);
-  Serial.println("[ATM] Inicjalizacja zakonczona.");
+ SPI.begin(PIN_SPI_SCK, PIN_SPI_MISO, PIN_SPI_MOSI, PIN_SPI_CS);
+  if (!licznik_atm.init(PIN_SPI_CS, spiMutex)) {
+      Serial.println("[CRITICAL ERROR] Komunikacja SPI z ATM90E32 nie powiodla sie!");
+      // Opcjonalnie: while(1) { delay(1000); } // zablokowanie programu
+  } else {
+      Serial.println("[ATM] Inicjalizacja zakonczona sukcesem.");
+  }
 
   LittleFS.begin(true);
   for(int i = 0; i < 60; i++) live_history[i] = 0.0;

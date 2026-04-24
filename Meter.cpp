@@ -4,10 +4,13 @@
 // ADRESY REJESTRÓW ATM90E32
 // -------------------------------------------------------------
 #define ATM_METER_EN    0x00
+#define ATM_CH_MAP_I    0x01
+#define ATM_CH_MAP_U    0x02
 #define ATM_SAG_PEAK    0x05
 #define ATM_OV_TH       0x06
 #define ATM_ZX_CONFIG   0x07
 #define ATM_SAG_TH      0x08
+#define ATM_PHASE_LOSS  0x09
 #define ATM_FREQ_LO     0x0C
 #define ATM_FREQ_HI     0x0D
 
@@ -24,25 +27,10 @@
 
 #define ATM_UGAIN_A     0x61
 #define ATM_IGAIN_A     0x62
-#define ATM_UOFFSET_A   0x63
-#define ATM_IOFFSET_A   0x64
-#define ATM_UGAIN_B     0x65
-#define ATM_IGAIN_B     0x66
-#define ATM_UOFFSET_B   0x67
-#define ATM_IOFFSET_B   0x68
-#define ATM_UGAIN_C     0x69
-#define ATM_IGAIN_C     0x6A
-#define ATM_UOFFSET_C   0x6B
-#define ATM_IOFFSET_C   0x6C
-
-#define ATM_SOFT_RESET  0x70
-#define ATM_EMM_INT_ST0 0x73
-#define ATM_EMM_INT_ST1 0x74
-#define ATM_EMM_INT_EN0 0x75
-#define ATM_EMM_INT_EN1 0x76
 #define ATM_CFG_REG     0x7F
+#define ATM_SOFT_RESET  0x70
 
-// Wartości kalibracyjne wyciągnięte ze starej biblioteki
+// Wartości kalibracyjne 
 #define CAL_UGAIN       33308
 #define CAL_IGAIN_A     17128
 #define CAL_IGAIN_B     17016
@@ -50,78 +38,82 @@
 
 EnergyMeter licznik_atm;
 
-void EnergyMeter::init(int csPin, SemaphoreHandle_t mutex) {
-    _cs = csPin;
+bool EnergyMeter::init(int csPin, SemaphoreHandle_t mutex) {
+    __cs = csPin;
     _spiMutex = mutex;
+    
+    if (_spiMutex == NULL) {
+        Serial.println("[UWAGA] Miernik zainicjowany bez Mutexa! Ryzyko kolizji na szynie SPI.");
+    }
     
     pinMode(_cs, OUTPUT);
     digitalWrite(_cs, HIGH);
     
-    // ==========================================
-    // 0. RESET UKŁADU
-    // ==========================================
     write16(ATM_SOFT_RESET, 0x789A); 
     delay(50);
     
-    // Odblokowanie rejestrów
+    // 1. WERYFIKACJA MAGISTRALI SPI
     write16(ATM_CFG_REG, 0x55AA);  
+    if (read16(ATM_CFG_REG) != 0x55AA) {
+        return false; 
+    }
     
-    // ==========================================
-    // 1. STATUSY I ZDARZENIA (Z BeginInternal)
-    // ==========================================
-    write16(ATM_METER_EN, 0x0001); // Włączenie pomiaru
-    write16(ATM_SAG_PEAK, 0x143F); // Konfiguracja detektora Sag/Peak
-    write16(ATM_SAG_TH,   0x33A1); // Wyliczony próg zapadu napięcia (190V)
-    write16(ATM_OV_TH,    0x48EF); // Wyliczony próg przepięcia (268V)
-    write16(ATM_FREQ_HI,  5300);   // Próg wysokiej częstotliwości (53 Hz)
-    write16(ATM_FREQ_LO,  4700);   // Próg niskiej częstotliwości (47 Hz)
-    write16(ATM_EMM_INT_EN0, 0xB76F); // Maski przerwań cz. 1
-    write16(ATM_EMM_INT_EN1, 0xDDFD); // Maski przerwań cz. 2
-    write16(ATM_EMM_INT_ST0, 0x0001); // Reset flag statusu
-    write16(ATM_EMM_INT_ST1, 0x0001); // Reset flag statusu
-    write16(ATM_ZX_CONFIG, 0xD654);   // Konfiguracja Zero-Crossing
+    // 2. JAWNE MAPOWANIE KANAŁÓW (3P4W)
+    write16(ATM_CH_MAP_I, 0x0210); // IA=I0, IB=I1, IC=I2
+    write16(ATM_CH_MAP_U, 0x0654); // UA=U0, UB=U1, UC=U2
     
-    // ==========================================
-    // 2. KONFIGURACJA METROLOGICZNA
-    // ==========================================
+    // 3. DYNAMICZNE WYLICZANIE PROGÓW NAPIĘCIOWYCH
+    float divider = (2.0f * CAL_UGAIN) / 32768.0f;
+    uint16_t sagTh = 0, ovTh = 0, phaseLossTh = 0;
+    
+    if (divider > 0.0f) {
+        sagTh       = (uint16_t)((230.0f * 0.78f * 100.0f * 1.41421356f) / divider); // 179V
+        ovTh        = (uint16_t)((230.0f * 1.22f * 100.0f * 1.41421356f) / divider); // 280V
+        phaseLossTh = (uint16_t)((23.0f * 100.0f * 1.41421356f) / divider);          // 23V (10% Un)
+    }
+    
+    write16(ATM_METER_EN, 0x0001); 
+    
+    // Zmiana PeakDet_period na 40ms dla 50Hz zgodnie z sugestią
+    write16(ATM_SAG_PEAK, 0x283F); 
+    
+    write16(ATM_SAG_TH,     sagTh);  
+    write16(ATM_OV_TH,      ovTh);   
+    write16(ATM_PHASE_LOSS, phaseLossTh); // Dodany rejestr detekcji utraty fazy
+    
+    write16(ATM_FREQ_HI,  5300);   
+    write16(ATM_FREQ_LO,  4700);   
+    write16(ATM_ZX_CONFIG, 0xD654);   
+    
+    // 4. KONFIGURACJA METROLOGICZNA I FILTRY
     write16(ATM_PL_CONST_H, 0x0861);
     write16(ATM_PL_CONST_L, 0xC468);
-    write16(ATM_MMODE0, 0x00E6);   // 50Hz, 3-fazy 4-przewody (Twoja stabilna konfiguracja)
-    write16(ATM_MMODE1, 0x0000);   // PGA Gain na 1x
     
-    // Progi startowe - CELOWO 0x0000 zamiast 0x1D4C (brak martwej strefy pomiaru)
-    write16(ATM_PSTART_TH, 0x0000);
-    write16(ATM_QSTART_TH, 0x0000);
-    write16(ATM_SSTART_TH, 0x0000);
-    write16(ATM_PPHASE_TH, 0x0000);
-    write16(ATM_QPHASE_TH, 0x0000);
-    write16(ATM_SPHASE_TH, 0x0000);
+    // MMODE0: 0x0087 jest prawidłowe dla przekładników CT. (Zmienić na 0x0487 TYLKO jeśli masz Rogowskiego)
+    write16(ATM_MMODE0, 0x0087);   
+    write16(ATM_MMODE1, 0x0000);   
     
-    // ==========================================
-    // 3. KALIBRACJA Z TWOICH PARAMETRÓW
-    // ==========================================
-    write16(ATM_UGAIN_A, CAL_UGAIN);
-    write16(ATM_UGAIN_B, CAL_UGAIN);
-    write16(ATM_UGAIN_C, CAL_UGAIN);
+    // Bardzo czułe filtry szumów ADC - startują już od ok. ~0.032W (Wartość 100 * 0.00032)
+    write16(ATM_PSTART_TH, 0x0064);
+    write16(ATM_QSTART_TH, 0x0064);
+    write16(ATM_SSTART_TH, 0x0064);
+    write16(ATM_PPHASE_TH, 0x0064);
+    write16(ATM_QPHASE_TH, 0x0064);
+    write16(ATM_SPHASE_TH, 0x0064);
     
-    write16(ATM_IGAIN_A, CAL_IGAIN_A);
-    write16(ATM_IGAIN_B, CAL_IGAIN_B);
-    write16(ATM_IGAIN_C, CAL_IGAIN_C);
+    // 5. WPISANIE KALIBRACJI Z TWOICH ZMIENNYCH
+    write16(ATM_UGAIN_A, CAL_UGAIN); write16(0x65, CAL_UGAIN); write16(0x69, CAL_UGAIN);
+    write16(ATM_IGAIN_A, CAL_IGAIN_A); write16(0x66, CAL_IGAIN_B); write16(0x6A, CAL_IGAIN_C);
 
-    // Zerowanie offsetów dla napięcia i prądu (wymagane by pozbyć się śmieci)
-    write16(ATM_UOFFSET_A, 0x0000); write16(ATM_IOFFSET_A, 0x0000);
-    write16(ATM_UOFFSET_B, 0x0000); write16(ATM_IOFFSET_B, 0x0000);
-    write16(ATM_UOFFSET_C, 0x0000); write16(ATM_IOFFSET_C, 0x0000);
-
+    // Czyszczenie Offsetów Pomiary + Fazy + Neutralny (0x63 do 0x6E)
+    for(uint16_t reg = 0x63; reg <= 0x6E; reg++) write16(reg, 0x0000);
     // Kasowanie starych offsetów mocy (0x41-0x4C)
     for(uint16_t reg = 0x41; reg <= 0x4C; reg++) write16(reg, 0x0000);
     // Kasowanie offsetów harmonicznych (0x51-0x56)
     for(uint16_t reg = 0x51; reg <= 0x56; reg++) write16(reg, 0x0000);
     
-    // ==========================================
-    // 4. ZABLOKOWANIE REJESTRÓW
-    // ==========================================
     write16(ATM_CFG_REG, 0x0000); 
+    return true; 
 }
 
 uint16_t EnergyMeter::read16(uint16_t addr) {
