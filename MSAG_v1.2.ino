@@ -83,14 +83,25 @@ void polaczWiFi() {
     if (WiFi.status() == WL_CONNECTED) {
         if (!wifi_connected) {
             wifi_connected = true;
+            Serial.println("\n=========================================");
+            Serial.println("[WIFI] SUKCES! Polaczono z siecia.");
+            Serial.print("[WIFI] Adres IP (strona WWW): ");
+            Serial.println(WiFi.localIP());
+            Serial.println("=========================================\n");
+            
             MDNS.begin(HOSTNAME);
             MDNS.addService("http", "tcp", 80);
             configTzTime("CET-1CEST,M3.5.0,M10.5.0/3", "pool.ntp.org");
         }
     } else {
-        if (wifi_connected) wifi_connected = false;
+        if (wifi_connected) {
+            wifi_connected = false;
+            Serial.println("\n[WIFI] UWAGA: Rozlaczono z siecia! Uklad dziala offline.");
+        }
         if (millis() - last_wifi_attempt > 30000) {
             last_wifi_attempt = millis();
+            Serial.print("[WIFI] Proba polaczenia z routerem: ");
+            Serial.println(WIFI_SSID);
             WiFi.begin(WIFI_SSID, WIFI_PASS);
         }
     }
