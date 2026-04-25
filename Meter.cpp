@@ -27,19 +27,31 @@
 
 #define ATM_UGAIN_A     0x61
 #define ATM_IGAIN_A     0x62
+#define ATM_UGAIN_B     0x65
+#define ATM_IGAIN_B     0x66
+#define ATM_UGAIN_C     0x69
+#define ATM_IGAIN_C     0x6A
+
 #define ATM_CFG_REG     0x7F
 #define ATM_SOFT_RESET  0x70
+#define ATM_EMM_INT_ST0 0x73
+#define ATM_EMM_INT_ST1 0x74
 
-// Wartości kalibracyjne 
-#define CAL_UGAIN       33308
-#define CAL_IGAIN_A     17128
-#define CAL_IGAIN_B     17016
-#define CAL_IGAIN_C     17062
+// =========================================================
+// WARTOŚCI KALIBRACYJNE (OSOBNE DLA KAŻDEJ FAZY)
+// =========================================================
+#define CAL_UGAIN_A     33514   // SKALIBROWANE L1 
+#define CAL_UGAIN_B     32975   // SKALIBROWANE L2 
+#define CAL_UGAIN_C     34287   // SKALIBROWANE L3
+
+#define CAL_IGAIN_A     20563   // SKALIBROWANE L1 
+#define CAL_IGAIN_B     20644   // SKALIBROWANE L2 
+#define CAL_IGAIN_C     21040   // SKALIBROWANE L3
 
 EnergyMeter licznik_atm;
 
 bool EnergyMeter::init(int csPin, SemaphoreHandle_t mutex) {
-    __cs = csPin;
+    _cs = csPin;
     _spiMutex = mutex;
     
     if (_spiMutex == NULL) {
@@ -58,60 +70,71 @@ bool EnergyMeter::init(int csPin, SemaphoreHandle_t mutex) {
         return false; 
     }
     
+    // =========================================================
     // 2. JAWNE MAPOWANIE KANAŁÓW (3P4W)
-    write16(ATM_CH_MAP_I, 0x0210); // IA=I0, IB=I1, IC=I2
+    // =========================================================
+    write16(ATM_CH_MAP_I, 0x0210); // IA=I0, IB=I1, IC=I2 
     write16(ATM_CH_MAP_U, 0x0654); // UA=U0, UB=U1, UC=U2
     
     // 3. DYNAMICZNE WYLICZANIE PROGÓW NAPIĘCIOWYCH
-    float divider = (2.0f * CAL_UGAIN) / 32768.0f;
+    float divider = (2.0f * CAL_UGAIN_A) / 32768.0f;
     uint16_t sagTh = 0, ovTh = 0, phaseLossTh = 0;
     
     if (divider > 0.0f) {
-        sagTh       = (uint16_t)((230.0f * 0.78f * 100.0f * 1.41421356f) / divider); // 179V
-        ovTh        = (uint16_t)((230.0f * 1.22f * 100.0f * 1.41421356f) / divider); // 280V
-        phaseLossTh = (uint16_t)((23.0f * 100.0f * 1.41421356f) / divider);          // 23V (10% Un)
+        sagTh       = (uint16_t)((230.0f * 0.78f * 100.0f * 1.41421356f) / divider); 
+        ovTh        = (uint16_t)((230.0f * 1.22f * 100.0f * 1.41421356f) / divider); 
+        phaseLossTh = (uint16_t)((23.0f * 100.0f * 1.41421356f) / divider);          
     }
     
     write16(ATM_METER_EN, 0x0001); 
-    
-    // Zmiana PeakDet_period na 40ms dla 50Hz zgodnie z sugestią
     write16(ATM_SAG_PEAK, 0x283F); 
-    
     write16(ATM_SAG_TH,     sagTh);  
     write16(ATM_OV_TH,      ovTh);   
-    write16(ATM_PHASE_LOSS, phaseLossTh); // Dodany rejestr detekcji utraty fazy
-    
+    write16(ATM_PHASE_LOSS, phaseLossTh); 
     write16(ATM_FREQ_HI,  5300);   
     write16(ATM_FREQ_LO,  4700);   
     write16(ATM_ZX_CONFIG, 0xD654);   
     
-    // 4. KONFIGURACJA METROLOGICZNA I FILTRY
+    // 4. KONFIGURACJA METROLOGICZNA
     write16(ATM_PL_CONST_H, 0x0861);
     write16(ATM_PL_CONST_L, 0xC468);
-    
-    // MMODE0: 0x0087 jest prawidłowe dla przekładników CT. (Zmienić na 0x0487 TYLKO jeśli masz Rogowskiego)
     write16(ATM_MMODE0, 0x0087);   
-    write16(ATM_MMODE1, 0x0000);   
+    write16(ATM_MMODE1, 0x002A);   // WŁĄCZENIE SPRZĘTOWEGO WZMACNIACZA PGA (4x) DLA PRĄDÓW
     
-    // Bardzo czułe filtry szumów ADC - startują już od ok. ~0.032W (Wartość 100 * 0.00032)
-    write16(ATM_PSTART_TH, 0x0064);
-    write16(ATM_QSTART_TH, 0x0064);
-    write16(ATM_SSTART_TH, 0x0064);
-    write16(ATM_PPHASE_TH, 0x0064);
-    write16(ATM_QPHASE_TH, 0x0064);
-    write16(ATM_SPHASE_TH, 0x0064);
+    // CAŁKOWITE WYZEROWANIE FILTRÓW
+    write16(ATM_PSTART_TH, 0x0000);
+    write16(ATM_QSTART_TH, 0x0000);
+    write16(ATM_SSTART_TH, 0x0000);
+    write16(ATM_PPHASE_TH, 0x0000);
+    write16(ATM_QPHASE_TH, 0x0000);
+    write16(ATM_SPHASE_TH, 0x0000);
     
-    // 5. WPISANIE KALIBRACJI Z TWOICH ZMIENNYCH
-    write16(ATM_UGAIN_A, CAL_UGAIN); write16(0x65, CAL_UGAIN); write16(0x69, CAL_UGAIN);
-    write16(ATM_IGAIN_A, CAL_IGAIN_A); write16(0x66, CAL_IGAIN_B); write16(0x6A, CAL_IGAIN_C);
+    // =========================================================
+    // 5. WPISANIE NIEZALEŻNEJ KALIBRACJI DLA FAZ
+    // =========================================================
+    write16(ATM_UGAIN_A, CAL_UGAIN_A); 
+    write16(ATM_UGAIN_B, CAL_UGAIN_B); 
+    write16(ATM_UGAIN_C, CAL_UGAIN_C);
+    
+    write16(ATM_IGAIN_A, CAL_IGAIN_A); 
+    write16(ATM_IGAIN_B, CAL_IGAIN_B); 
+    write16(ATM_IGAIN_C, CAL_IGAIN_C);
 
-    // Czyszczenie Offsetów Pomiary + Fazy + Neutralny (0x63 do 0x6E)
-    for(uint16_t reg = 0x63; reg <= 0x6E; reg++) write16(reg, 0x0000);
+    // BEZPIECZNE czyszczenie offsetów
+    write16(0x63, 0x0000); write16(0x64, 0x0000); // L1: Uoffset, Ioffset
+    write16(0x67, 0x0000); write16(0x68, 0x0000); // L2: Uoffset, Ioffset
+    write16(0x6B, 0x0000); write16(0x6C, 0x0000); // L3: Uoffset, Ioffset
+    write16(0x6D, 0x0000); write16(0x6E, 0x0000); // Neutralny: Uoffset, Ioffset
+
     // Kasowanie starych offsetów mocy (0x41-0x4C)
     for(uint16_t reg = 0x41; reg <= 0x4C; reg++) write16(reg, 0x0000);
     // Kasowanie offsetów harmonicznych (0x51-0x56)
     for(uint16_t reg = 0x51; reg <= 0x56; reg++) write16(reg, 0x0000);
     
+    // 6. CZYSTKA FLAG PRZERWAŃ I ZAMKNIĘCIE REJESTRÓW
+    write16(ATM_EMM_INT_ST0, 0xFFFF); 
+    write16(ATM_EMM_INT_ST1, 0xFFFF);
+
     write16(ATM_CFG_REG, 0x0000); 
     return true; 
 }
