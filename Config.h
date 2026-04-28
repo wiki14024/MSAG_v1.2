@@ -9,7 +9,7 @@
 #define HOSTNAME "msag"
 
 const String GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwhYfMLe6PS3PxiIYSjvXA-fwvaT6TM6Ta97vp9TzwSErPxCwhNvsFWI8d1dCimNf-w/exec";
-const String FW_VERSION = "v1.2 PRO-C6-HYBRID";
+const String FW_VERSION = "v1.2.1";
 
 // ====================================================================
 // PINY

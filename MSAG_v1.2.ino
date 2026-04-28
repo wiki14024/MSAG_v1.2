@@ -21,9 +21,9 @@
 // ====================================================================
 // FAKTYCZNE DEKLARACJE ZMIENNYCH GLOBALNYCH
 // ====================================================================
-float p_total = 0.0;
-float ema_p_total = 0.0;
-int aktualne_pwm = 0;
+volatile float p_total = 0.0;
+volatile float ema_p_total = 0.0;
+volatile int aktualne_pwm = 0;
 bool tryb_auto = true;
 bool tryb_awaryjny = false;
 bool wifi_connected = false;
@@ -108,12 +108,24 @@ void polaczWiFi() {
 }
 
 // ====================================================================
-// TASK STEROWANIA ORAZ ODCZYTU (W pełni zabezpieczony i odchudzony)
+// STAŁE ALGORYTMU AUTOKONSUMPCJI (łatwe do strojenia)
+// ====================================================================
+const float STREFA_MARTWA_GORA  = -50.0f;   // W (powyżej tego zmniejszamy PWM - pobór/mały eksport)
+const float STREFA_MARTWA_DOL   = -120.0f;  // W (poniżej tego zwiększamy PWM - za duży eksport)
+const float PROG_NAGLY_POBOR    = 200.0f;   // W (próg detekcji nagłego skoku, np. czajnik)
+const int   KROK_GORA_MIN       = 15;       // PWM units — mały krok przy małym eksporcie
+const int   KROK_GORA_MAX       = 80;       // PWM units — duży krok przy dużym eksporcie
+
+// ====================================================================
+// TASK STEROWANIA ORAZ ODCZYTU
 // ====================================================================
 void ControlTask(void *pvParameters) {
     float p_meter;
+    static int cykle_bez_zmiany = 0;
+    static int ssr_error_count = 0; // Histereza dla błędu falownika/SSR
+
     for(;;) {
-        // 1. ODCZYTY Z NOWEJ BIBLIOTEKI (Sama blokuje i zwalnia Mutex!)
+        // 1. ODCZYTY Z BIBLIOTEKI 
         p_meter = licznik_atm.getTotalActivePower();
         phase_voltage[0] = licznik_atm.getVoltage(0); phase_voltage[1] = licznik_atm.getVoltage(1); phase_voltage[2] = licznik_atm.getVoltage(2);
         phase_current[0] = licznik_atm.getCurrent(0); phase_current[1] = licznik_atm.getCurrent(1); phase_current[2] = licznik_atm.getCurrent(2);
@@ -121,9 +133,6 @@ void ControlTask(void *pvParameters) {
         phase_angle[0] = licznik_atm.getPhaseAngle(0); phase_angle[1] = licznik_atm.getPhaseAngle(1); phase_angle[2] = licznik_atm.getPhaseAngle(2);
         
         diag_sys_status0 = licznik_atm.getSysStatus0();
-        diag_raw_i1 = licznik_atm.getRawCurrent(0);
-        diag_raw_i2 = licznik_atm.getRawCurrent(1);
-        diag_raw_i3 = licznik_atm.getRawCurrent(2);
         
         float p_sum = phase_power[0] + phase_power[1] + phase_power[2];
         p_total = (fabs(p_meter) > fabs(p_sum)) ? p_meter : p_sum;
@@ -131,17 +140,71 @@ void ControlTask(void *pvParameters) {
         // 2. WYWOŁANIE LOGÓW Z OSOBNEGO PLIKU
         wypiszLogiSerial();
 
-        // 3. ALGORYTM AUTOKONSUMPCJI
+        // 3. WYLICZANIE EMA (Filtru wygładzającego)
         ema_p_total = (EMA_ALPHA * p_total) + ((1.0 - EMA_ALPHA) * ema_p_total);
+
+        // 4. BEZPIECZEŃSTWO SSR (Z Histerezą - 3 odczyty z rzędu aby wykluczyć szum)
         if (aktualne_pwm > 512 && ssr_v < 1.0) {
-            if (!tryb_awaryjny) { tryb_awaryjny = true; awaryjny_timer = millis(); }
-        } else if (tryb_awaryjny) {
+            ssr_error_count++;
+            if (ssr_error_count >= 3 && !tryb_awaryjny) { 
+                tryb_awaryjny = true; 
+                awaryjny_timer = millis(); 
+            }
+        } else {
+            ssr_error_count = 0; // Reset błędu
+        }
+        
+        if (tryb_awaryjny) {
             if (ssr_v > 1.5 || (aktualne_pwm == 0 && millis() - awaryjny_timer > 10000)) tryb_awaryjny = false;
         }
         
+        // 5. ZMODYFIKOWANY PANCERNY ALGORYTM AUTOKONSUMPCJI
         if (tryb_auto && !tryb_awaryjny) {
-            if (ema_p_total > -50) aktualne_pwm -= 40;
-            else if (ema_p_total < -100) aktualne_pwm += 20;
+            
+            float delta = p_total - ema_p_total;
+
+            // --- ŚCIEŻKA 1: NAGŁA REAKCJA (surowe dane, omijamy filtr EMA) ---
+            if (delta > PROG_NAGLY_POBOR) {
+                int krok_nagly = map(constrain((int)delta, 200, 3000), 200, 3000, 80, 1023);
+                aktualne_pwm -= krok_nagly;
+                cykle_bez_zmiany = 0;
+            }
+            // --- ŚCIEŻKA 2: NORMALNA REGULACJA (na bazie wygładzonego EMA) ---
+            else {
+                // Zliczanie czasu w strefie martwej (dla anty-oscylacji)
+                if (ema_p_total >= STREFA_MARTWA_DOL && ema_p_total <= STREFA_MARTWA_GORA) {
+                    cykle_bez_zmiany++;
+                } else {
+                    cykle_bez_zmiany = 0;
+                }
+
+                // ANTY-OSCYLACJA — po 3 sekundach stabilności system staje się "leniwy"
+                if (cykle_bez_zmiany > 9) {
+                    if (ema_p_total > 50.0f)    aktualne_pwm -= 5;
+                    else if (ema_p_total < -200.0f) aktualne_pwm += 3;
+                }
+                // STANDARDOWA PRACA PROPORCJONALNA
+                else {
+                    if (ema_p_total > STREFA_MARTWA_GORA) {
+                        // Pobieramy z sieci — agresywnie zmniejszamy
+                        int krok = map(
+                            constrain((int)ema_p_total, (int)STREFA_MARTWA_GORA, 1500),
+                            (int)STREFA_MARTWA_GORA, 1500,
+                            15, 200
+                        );
+                        aktualne_pwm -= krok;
+                    }
+                    else if (ema_p_total < STREFA_MARTWA_DOL) {
+                        // Eksportujemy — szybko zwiększamy (KROK_GORA_MAX=80, KROK_GORA_MIN=15)
+                        int krok = map(
+                            constrain((int)ema_p_total, -4000, (int)STREFA_MARTWA_DOL),
+                            -4000, (int)STREFA_MARTWA_DOL,
+                            KROK_GORA_MAX, KROK_GORA_MIN  // uwaga: mapa jest odwrócona!
+                        );                                // -4000W → krok MAX, -120W → krok MIN
+                        aktualne_pwm += krok;
+                    }
+                }
+            }
             aktualne_pwm = constrain(aktualne_pwm, 0, 1023);
         }
         
@@ -198,6 +261,12 @@ void wyslijDaneWebsocket(bool sendLive) {
   doc["fw_version"] = FW_VERSION; doc["cpu_temp"] = temperatureRead();
   doc["export_kwh"] = total_export_kwh; doc["import_kwh"] = total_import_kwh;
   doc["cloud_url"] = GOOGLE_SCRIPT_URL;
+  // DODANE: Wysyłanie stanu fizycznych przełączników DIP do strony WWW
+  JsonObject dips = doc.createNestedObject("dips");
+  dips["1"] = (digitalRead(PIN_DIP1) == LOW);
+  dips["2"] = (digitalRead(PIN_DIP2) == LOW);
+  dips["3"] = (digitalRead(PIN_DIP3) == LOW);
+  dips["4"] = (digitalRead(PIN_DIP4) == LOW);
   
   JsonArray phases = doc.createNestedArray("phases");
   for(int i = 0; i < 3; i++) {
@@ -302,7 +371,14 @@ void loop() {
   
   if (digitalRead(PIN_RST_IN) == LOW) {
       if (rst_start == 0) rst_start = millis();
-      if (millis() - rst_start > 5000) ESP.restart();
+      if (millis() - rst_start > 5000) {
+          // DODANE: Zapisz ułamki kWh przed twardym restartem z przycisku
+          nvm.putDouble("exp_kwh", total_export_kwh); 
+          nvm.putDouble("imp_kwh", total_import_kwh);
+          zapiszKolejkeDoNVM();
+          delay(100);
+          ESP.restart();
+      }
   } else { rst_start = 0; }
 
   ssr_v = (analogRead(PIN_SSR_SENSE) * 3.3 / 4095.0) * 3.0;

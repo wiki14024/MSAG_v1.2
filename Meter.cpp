@@ -156,7 +156,8 @@ uint16_t EnergyMeter::read16(uint16_t addr) {
 int32_t EnergyMeter::read32(uint16_t addrHigh, uint16_t addrLow) {
     uint16_t high = read16(addrHigh);
     uint16_t low = read16(addrLow);
-    return (int32_t((int16_t)high) << 16) | low;
+    // Poprawione bezpieczne rzutowanie dla liczb ujemnych:
+    return (int32_t)(((int32_t)((int16_t)high) << 16) | (uint32_t)low);
 }
 
 void EnergyMeter::write16(uint16_t addr, uint16_t val) {

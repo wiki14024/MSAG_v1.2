@@ -4,9 +4,9 @@
 #include <Adafruit_NeoPixel.h>
 
 // Deklaracje zmiennych współdzielonych
-extern float p_total;
-extern float ema_p_total;
-extern int aktualne_pwm;
+extern volatile float p_total;
+extern volatile float ema_p_total;
+extern volatile int aktualne_pwm;
 extern bool tryb_auto;
 extern bool tryb_awaryjny;
 extern bool wifi_connected;

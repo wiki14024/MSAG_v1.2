@@ -421,9 +421,17 @@
 
         document.getElementById('btn-auto').onclick = () => sendCommand({mode: 'auto'});
         document.getElementById('btn-man').onclick = () => sendCommand({mode: 'manual'});
+        
+        // --- Suwak mocy PWM (z zabezpieczeniem Anti-Spam / Debounce 100ms) ---
+        let sliderTimeout;
         document.getElementById('heater-slider').oninput = (e) => { 
-            document.getElementById('slider-val').innerText = e.target.value + "%"; 
-            sendCommand({pwm: parseInt(e.target.value)}); 
+            const val = parseInt(e.target.value);
+            document.getElementById('slider-val').innerText = val + "%"; 
+            
+            clearTimeout(sliderTimeout);
+            sliderTimeout = setTimeout(() => {
+                sendCommand({pwm: val}); 
+            }, 100);
         };
         document.getElementById('btn-reboot').onclick = () => { 
             if(confirm("Restart MSAG?")) sendCommand({cmd: 'reboot'}); 
